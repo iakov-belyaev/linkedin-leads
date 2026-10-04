@@ -1,0 +1,16 @@
+# Environment & Secrets
+.env
+
+# Database
+*.db
+
+# Python runtime
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# IDE / Editors
+.vscode/
+.idea/
