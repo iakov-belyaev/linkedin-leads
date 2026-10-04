@@ -3,8 +3,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ---------------------------------------------------------------------------
+# API keys / environment hooks
+# ---------------------------------------------------------------------------
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+APIFY_API_KEY = os.getenv("APIFY_API_KEY")
+
 DB_PATH = "cyprus_leads.db"
+
+# ---------------------------------------------------------------------------
+# Feature flags
+# ---------------------------------------------------------------------------
+# Toggle the enrichment engine: True -> Gemini, False -> DeepSeek.
+USE_GEMINI = os.getenv("USE_GEMINI", "False").strip().lower() in ("1", "true", "yes")
+# Toggle the ingestion source: True -> Apify, False -> DuckDuckGo.
+USE_APIFY = os.getenv("USE_APIFY", "False").strip().lower() in ("1", "true", "yes")
+
+# ---------------------------------------------------------------------------
+# Geo markers used by the quality-filtering layer.
+# ---------------------------------------------------------------------------
+GEO_MARKERS = ("cyprus", "limassol", "nicosia", "larnaca", "paphos", "кипр", "лимасол")
 
 # ---------------------------------------------------------------------------
 # Search query registry

@@ -1,14 +1,97 @@
-from openai import OpenAI
-from config import DEEPSEEK_API_KEY
-
-if not DEEPSEEK_API_KEY:
-    raise ValueError("DEEPSEEK_API_KEY missing from environment/.env file.")
-
-client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com",
-    timeout=15.0
+from config import (
+    DEEPSEEK_API_KEY,
+    GEMINI_API_KEY,
+    USE_GEMINI,
 )
+
+# ---------------------------------------------------------------------------
+# Dual-engine adapter
+# ---------------------------------------------------------------------------
+# The enrichment layer can run on either Gemini (google-genai) or DeepSeek
+# (OpenAI-compatible). The active engine is selected via the USE_GEMINI flag
+# in config.py. Both engines are lazily initialised so a missing key or
+# dependency only fails when that engine is actually requested.
+
+GEMINI_MODEL = "gemini-2.5-flash"
+DEEPSEEK_MODEL = "deepseek-chat"
+
+_deepseek_client = None
+_gemini_client = None
+
+
+def _get_deepseek_client():
+    """Lazily build the DeepSeek (OpenAI-compatible) client."""
+    global _deepseek_client
+    if _deepseek_client is not None:
+        return _deepseek_client
+
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY missing from environment/.env file. "
+            "Set it or switch USE_GEMINI=True."
+        )
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'openai' package is required for the DeepSeek engine. "
+            "Install it with: pip install openai"
+        ) from exc
+
+    _deepseek_client = OpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com",
+        timeout=15.0,
+    )
+    return _deepseek_client
+
+
+def _get_gemini_client():
+    """Lazily build the Gemini (google-genai) client."""
+    global _gemini_client
+    if _gemini_client is not None:
+        return _gemini_client
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY missing from environment/.env file. "
+            "Set it or switch USE_GEMINI=False."
+        )
+
+    try:
+        from google import genai
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'google-genai' package is required for the Gemini engine. "
+            "Install it with: pip install google-genai"
+        ) from exc
+
+    _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _gemini_client
+
+
+def _call_deepseek(prompt: str) -> str:
+    client = _get_deepseek_client()
+    response = client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": "You are a concise, sharp B2B outreach copywriter."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _call_gemini(prompt: str) -> str:
+    client = _get_gemini_client()
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
+    return (response.text or "").strip()
+
 
 def generate_pitch(title_snippet: str, body_snippet: str, target_role: str = "HR") -> str:
     prompt = f"""
@@ -38,12 +121,6 @@ Task:
 Output ONLY the raw pitch text with no quotes, greetings, or meta commentary.
 """
 
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": "You are a concise, sharp B2B outreach copywriter."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3
-    )
-    return response.choices[0].message.content.strip()
+    if USE_GEMINI:
+        return _call_gemini(prompt)
+    return _call_deepseek(prompt)
