@@ -1,4 +1,5 @@
-duckduckgo-search>=6.0.0
-openai>=1.0.0
-python-dotenv>=1.0.0
 ddgs>=6.0.0
+openai>=1.0.0
+google-genai>=0.3.0
+apify-client>=1.6.0
+python-dotenv>=1.0.0
