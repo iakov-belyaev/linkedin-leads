@@ -25,10 +25,18 @@ def update_remaining_counter():
     remaining_label.config(text=f"Remaining new leads: {remaining}")
 
 
+def get_pitch_text():
+    """Return the pitch text without Tk's implicit trailing newline."""
+    # Tk always appends a newline to Text contents; strip it so the
+    # character count and clipboard payload match what the user sees.
+    return draft_text.get("1.0", "end-1c")
+
+
 def update_char_counter(event=None):
     """Update the pitch length counter and warn when over the limit."""
-    length = len(draft_text.get("1.0", tk.END).strip())
-    if length > MAX_PITCH_LENGTH:
+    length = len(get_pitch_text().strip())
+    over_limit = length > MAX_PITCH_LENGTH
+    if over_limit:
         char_label.config(
             text=f"{length}/{MAX_PITCH_LENGTH} characters (too long!)",
             fg="red",
@@ -38,12 +46,22 @@ def update_char_counter(event=None):
             text=f"{length}/{MAX_PITCH_LENGTH} characters",
             fg="gray",
         )
+    # Block approval while the pitch is empty or over the limit, but only
+    # when a lead is actually loaded (skip_btn stays usable otherwise).
+    if current_lead_id is not None:
+        approve_btn.config(
+            state=tk.DISABLED if (over_limit or length == 0) else tk.NORMAL
+        )
 
 
 def open_current_url(event=None):
     """Open the current LinkedIn URL in the default browser."""
-    if current_url:
+    if not current_url:
+        return
+    try:
         webbrowser.open(current_url)
+    except Exception as e:
+        messagebox.showerror("Error", f"Could not open URL:\n{e}")
 
 def on_pitch_generated(pitch, error):
     """Callback invoked on the main thread once generation finishes."""
@@ -60,7 +78,9 @@ def on_pitch_generated(pitch, error):
     draft_text.delete("1.0", tk.END)
     draft_text.insert(tk.END, pitch)
     update_char_counter()
-    set_buttons_enabled(True)
+    # update_char_counter already enables approve when the pitch is valid;
+    # only force-enable skip here.
+    skip_btn.config(state=tk.NORMAL)
 
 def load_lead_into_ui():
     """Loads the next lead and generates the draft for the UI."""
@@ -70,6 +90,10 @@ def load_lead_into_ui():
     if not lead:
         current_lead_id = None
         current_url = None
+        url_label.config(text="URL: ")
+        raw_data_text.delete("1.0", tk.END)
+        draft_text.delete("1.0", tk.END)
+        update_char_counter()
         update_remaining_counter()
         messagebox.showinfo("Done", "No more new leads in the database!")
         root.quit()
@@ -108,7 +132,18 @@ def approve_and_copy():
         messagebox.showwarning("No lead", "There is no active lead to approve.")
         return
 
-    pitch = draft_text.get("1.0", tk.END).strip()
+    pitch = get_pitch_text().strip()
+
+    if not pitch:
+        messagebox.showwarning("Empty pitch", "The pitch is empty. Nothing to approve.")
+        return
+    if len(pitch) > MAX_PITCH_LENGTH:
+        messagebox.showwarning(
+            "Pitch too long",
+            f"The pitch is {len(pitch)} characters, exceeding the "
+            f"{MAX_PITCH_LENGTH}-character limit.",
+        )
+        return
 
     # Copy to clipboard
     root.clipboard_clear()
@@ -117,7 +152,7 @@ def approve_and_copy():
     # Persist the (possibly manually edited) pitch and mark as processed.
     update_lead_status(current_lead_id, "Processed", ai_draft_pitch=pitch)
 
-    # Move to next
+    # Move to next (load_lead_into_ui refreshes the remaining counter).
     load_lead_into_ui()
 
 def skip_lead():
@@ -127,6 +162,7 @@ def skip_lead():
         return
 
     update_lead_status(current_lead_id, "Skipped")
+    # load_lead_into_ui refreshes the remaining counter after the status change.
     load_lead_into_ui()
 
 # --- Build Tkinter GUI ---
