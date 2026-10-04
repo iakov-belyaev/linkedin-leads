@@ -1,69 +1,49 @@
-import sqlite3
-import os
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox
-from openai import OpenAI
-from dotenv import load_dotenv
 
-# 1. Load the environment variables strictly from the local .env file
-load_dotenv()
-api_key = os.getenv("DEEPSEEK_API_KEY")
+from db import init_db, get_next_new_lead, update_lead_status, get_remaining_count
+from enricher import generate_pitch
 
-if not api_key:
-    raise ValueError("Missing DEEPSEEK_API_KEY. Please ensure it is set inside your .env file.")
+# Ensure the schema exists before the UI queries it.
+init_db()
 
-# 2. Initialize DeepSeek Client
-client = OpenAI(
-    api_key=api_key, 
-    base_url="https://api.deepseek.com"
-)
-
-# Connect to the SQLite Database from Phase 1
-conn = sqlite3.connect('cyprus_leads.db')
-cursor = conn.cursor()
-
-def get_next_lead():
-    """Fetches the next unprocessed lead from the database."""
-    cursor.execute("SELECT id, linkedin_url, title_snippet, body_snippet FROM leads WHERE status='New' LIMIT 1")
-    return cursor.fetchone()
-
-def generate_pitch(title, body):
-    """Uses DeepSeek API to parse the search snippet and write a pitch."""
-    prompt = f"""
-    You are an expert B2B event organiser based in Cyprus. 
-    Review the following search engine snippet for a LinkedIn profile.
-    
-    Profile Title/Name: {title}
-    Profile Bio/Snippet: {body}
-    
-    Task:
-    1. Identify their company and role if possible.
-    2. Write a short, highly personalized 2-3 sentence LinkedIn connection request message (max 300 characters). 
-    3. The pitch should offer high-end corporate event organization, team-building, or offsites.
-    4. Write it in English unless the profile is exclusively in Russian.
-    
-    Output ONLY the pitch text, with no introductory or concluding remarks.
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "You are a concise, professional B2B copywriter."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Error generating pitch: {str(e)}"
+# Maximum allowed length for a LinkedIn connection request pitch.
+MAX_PITCH_LENGTH = 300
 
 def set_buttons_enabled(enabled):
     """Enable or disable the action buttons."""
     state = tk.NORMAL if enabled else tk.DISABLED
     approve_btn.config(state=state)
     skip_btn.config(state=state)
+
+
+def update_remaining_counter():
+    """Refresh the remaining-leads counter label."""
+    remaining = get_remaining_count()
+    remaining_label.config(text=f"Remaining new leads: {remaining}")
+
+
+def update_char_counter(event=None):
+    """Update the pitch length counter and warn when over the limit."""
+    length = len(draft_text.get("1.0", tk.END).strip())
+    if length > MAX_PITCH_LENGTH:
+        char_label.config(
+            text=f"{length}/{MAX_PITCH_LENGTH} characters (too long!)",
+            fg="red",
+        )
+    else:
+        char_label.config(
+            text=f"{length}/{MAX_PITCH_LENGTH} characters",
+            fg="gray",
+        )
+
+
+def open_current_url(event=None):
+    """Open the current LinkedIn URL in the default browser."""
+    if current_url:
+        webbrowser.open(current_url)
 
 def on_pitch_generated(pitch, error):
     """Callback invoked on the main thread once generation finishes."""
@@ -79,32 +59,36 @@ def on_pitch_generated(pitch, error):
 
     draft_text.delete("1.0", tk.END)
     draft_text.insert(tk.END, pitch)
+    update_char_counter()
     set_buttons_enabled(True)
 
 def load_lead_into_ui():
     """Loads the next lead and generates the draft for the UI."""
     global current_lead_id, current_url
     
-    lead = get_next_lead()
+    lead = get_next_new_lead()
     if not lead:
         current_lead_id = None
         current_url = None
+        update_remaining_counter()
         messagebox.showinfo("Done", "No more new leads in the database!")
         root.quit()
         return
-        
-    current_lead_id, url, title, body = lead
+
+    current_lead_id, url, title, body, _target_role = lead
     current_url = url
-    
+
     # Update UI with raw data
     url_label.config(text=f"URL: {url}")
     raw_data_text.delete("1.0", tk.END)
     raw_data_text.insert(tk.END, f"TITLE:\n{title}\n\nSNIPPET:\n{body}")
-    
-    # Generate and display DeepSeek pitch in a background thread
+
+    # Generate and display the AI pitch in a background thread
     draft_text.delete("1.0", tk.END)
-    draft_text.insert(tk.END, "DeepSeek is generating a personalized pitch...")
+    draft_text.insert(tk.END, "Generating a personalized pitch...")
+    update_char_counter()
     set_buttons_enabled(False)
+    update_remaining_counter()
 
     def worker():
         try:
@@ -125,15 +109,14 @@ def approve_and_copy():
         return
 
     pitch = draft_text.get("1.0", tk.END).strip()
-    
+
     # Copy to clipboard
     root.clipboard_clear()
     root.clipboard_append(pitch)
-    
-    # Update Database
-    cursor.execute("UPDATE leads SET status='Processed', ai_draft_pitch=? WHERE id=?", (pitch, current_lead_id))
-    conn.commit()
-    
+
+    # Persist the (possibly manually edited) pitch and mark as processed.
+    update_lead_status(current_lead_id, "Processed", ai_draft_pitch=pitch)
+
     # Move to next
     load_lead_into_ui()
 
@@ -143,8 +126,7 @@ def skip_lead():
         messagebox.showwarning("No lead", "There is no active lead to skip.")
         return
 
-    cursor.execute("UPDATE leads SET status='Skipped' WHERE id=?", (current_lead_id,))
-    conn.commit()
+    update_lead_status(current_lead_id, "Skipped")
     load_lead_into_ui()
 
 # --- Build Tkinter GUI ---
@@ -156,16 +138,30 @@ root.configure(padx=20, pady=20)
 current_lead_id = None
 current_url = None
 
-tk.Label(root, text="Raw Search Snippet", font=("Arial", 12, "bold")).pack(anchor="w")
+header_frame = tk.Frame(root)
+header_frame.pack(fill="x")
+
+tk.Label(header_frame, text="Raw Search Snippet", font=("Arial", 12, "bold")).pack(side="left", anchor="w")
+remaining_label = tk.Label(header_frame, text="Remaining new leads: 0", fg="gray")
+remaining_label.pack(side="right", anchor="e")
+
 url_label = tk.Label(root, text="URL: ", fg="blue", cursor="hand2")
 url_label.pack(anchor="w", pady=(0, 5))
+url_label.bind("<Button-1>", open_current_url)
 
 raw_data_text = tk.Text(root, height=6, wrap=tk.WORD, bg="#f0f0f0")
 raw_data_text.pack(fill="x", pady=(0, 15))
 
-tk.Label(root, text="DeepSeek Draft Pitch", font=("Arial", 12, "bold")).pack(anchor="w")
+pitch_header_frame = tk.Frame(root)
+pitch_header_frame.pack(fill="x")
+
+tk.Label(pitch_header_frame, text="AI Draft Pitch", font=("Arial", 12, "bold")).pack(side="left", anchor="w")
+char_label = tk.Label(pitch_header_frame, text=f"0/{MAX_PITCH_LENGTH} characters", fg="gray")
+char_label.pack(side="right", anchor="e")
+
 draft_text = tk.Text(root, height=6, wrap=tk.WORD, font=("Arial", 11))
 draft_text.pack(fill="x", pady=(0, 20))
+draft_text.bind("<KeyRelease>", update_char_counter)
 
 btn_frame = tk.Frame(root)
 btn_frame.pack(fill="x")
@@ -178,6 +174,3 @@ approve_btn.pack(side="right", padx=10)
 # Start the loop
 load_lead_into_ui()
 root.mainloop()
-
-# Close DB when UI closes
-conn.close()
