@@ -1,5 +1,5 @@
 import time
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from config import SEARCH_QUERIES
 from db import init_db, insert_lead
 
@@ -30,8 +30,10 @@ def run_scraper(max_results_per_query=50):
             role_tag = "Procurement" if ("Procurement" in query or "Закупки" in query) else "HR"
             
             try:
-                results = ddgs.text(query, max_results=max_results_per_query)
+                results = list(ddgs.text(query, max_results=max_results_per_query))
+                raw_count = len(results)
                 added_count = 0
+                valid_count = 0
                 for res in results:
                     url = res.get('href', '')
                     title = res.get('title', '')
@@ -40,11 +42,12 @@ def run_scraper(max_results_per_query=50):
                     if not is_valid_profile_url(url):
                         continue
 
+                    valid_count += 1
                     if insert_lead(url, title, body, target_role=role_tag):
                         added_count += 1
                 
                 total_added += added_count
-                print(f"[Scraper] Added {added_count} new leads.")
+                print(f"[Scraper] Raw hits: {raw_count}, passed validation: {valid_count}, new leads inserted: {added_count}.")
             except Exception as e:
                 print(f"[Scraper] Error during query execution: {e}")
             
