@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import threading
 import tkinter as tk
 from tkinter import messagebox
 from openai import OpenAI
@@ -58,12 +59,36 @@ def generate_pitch(title, body):
     except Exception as e:
         return f"Error generating pitch: {str(e)}"
 
+def set_buttons_enabled(enabled):
+    """Enable or disable the action buttons."""
+    state = tk.NORMAL if enabled else tk.DISABLED
+    approve_btn.config(state=state)
+    skip_btn.config(state=state)
+
+def on_pitch_generated(pitch, error):
+    """Callback invoked on the main thread once generation finishes."""
+    global current_lead_id
+
+    if error:
+        draft_text.delete("1.0", tk.END)
+        draft_text.insert(tk.END, f"Error generating pitch: {error}")
+        # Keep the lead loaded but block approval on failure.
+        approve_btn.config(state=tk.DISABLED)
+        skip_btn.config(state=tk.NORMAL)
+        return
+
+    draft_text.delete("1.0", tk.END)
+    draft_text.insert(tk.END, pitch)
+    set_buttons_enabled(True)
+
 def load_lead_into_ui():
     """Loads the next lead and generates the draft for the UI."""
     global current_lead_id, current_url
     
     lead = get_next_lead()
     if not lead:
+        current_lead_id = None
+        current_url = None
         messagebox.showinfo("Done", "No more new leads in the database!")
         root.quit()
         return
@@ -76,18 +101,29 @@ def load_lead_into_ui():
     raw_data_text.delete("1.0", tk.END)
     raw_data_text.insert(tk.END, f"TITLE:\n{title}\n\nSNIPPET:\n{body}")
     
-    # Generate and display DeepSeek pitch
+    # Generate and display DeepSeek pitch in a background thread
     draft_text.delete("1.0", tk.END)
     draft_text.insert(tk.END, "DeepSeek is generating a personalized pitch...")
-    root.update()
-    
-    pitch = generate_pitch(title, body)
-    
-    draft_text.delete("1.0", tk.END)
-    draft_text.insert(tk.END, pitch)
+    set_buttons_enabled(False)
+
+    def worker():
+        try:
+            pitch = generate_pitch(title, body)
+            error = None
+        except Exception as e:
+            pitch = None
+            error = str(e)
+        # Marshal the result back onto the Tkinter main thread.
+        root.after(0, lambda: on_pitch_generated(pitch, error))
+
+    threading.Thread(target=worker, daemon=True).start()
 
 def approve_and_copy():
     """Copies the pitch to clipboard and marks the lead as processed."""
+    if current_lead_id is None:
+        messagebox.showwarning("No lead", "There is no active lead to approve.")
+        return
+
     pitch = draft_text.get("1.0", tk.END).strip()
     
     # Copy to clipboard
@@ -103,6 +139,10 @@ def approve_and_copy():
 
 def skip_lead():
     """Marks the lead as skipped if it's irrelevant or low quality."""
+    if current_lead_id is None:
+        messagebox.showwarning("No lead", "There is no active lead to skip.")
+        return
+
     cursor.execute("UPDATE leads SET status='Skipped' WHERE id=?", (current_lead_id,))
     conn.commit()
     load_lead_into_ui()
@@ -130,8 +170,10 @@ draft_text.pack(fill="x", pady=(0, 20))
 btn_frame = tk.Frame(root)
 btn_frame.pack(fill="x")
 
-tk.Button(btn_frame, text="Reject / Skip", command=skip_lead, bg="#ffcccb", width=15, height=2).pack(side="left", padx=10)
-tk.Button(btn_frame, text="Approve & Copy", command=approve_and_copy, bg="#90ee90", font=("Arial", 10, "bold"), width=20, height=2).pack(side="right", padx=10)
+skip_btn = tk.Button(btn_frame, text="Reject / Skip", command=skip_lead, bg="#ffcccb", width=15, height=2)
+skip_btn.pack(side="left", padx=10)
+approve_btn = tk.Button(btn_frame, text="Approve & Copy", command=approve_and_copy, bg="#90ee90", font=("Arial", 10, "bold"), width=20, height=2)
+approve_btn.pack(side="right", padx=10)
 
 # Start the loop
 load_lead_into_ui()

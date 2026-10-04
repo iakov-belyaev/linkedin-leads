@@ -3,6 +3,20 @@ from duckduckgo_search import DDGS
 from config import SEARCH_QUERIES
 from db import init_db, insert_lead
 
+# URL path segments that indicate a non-personal LinkedIn page.
+INVALID_URL_MARKERS = ("/jobs/", "/company/", "/posts/", "/dir/")
+
+def is_valid_profile_url(url: str) -> bool:
+    """Return True only for personal LinkedIn profile URLs (contain '/in/')."""
+    if not url:
+        return False
+    lowered = url.lower()
+    if "/in/" not in lowered:
+        return False
+    if any(marker in lowered for marker in INVALID_URL_MARKERS):
+        return False
+    return True
+
 def run_scraper(max_results_per_query=50):
     init_db()
     print("[Db] Database initialized.")
@@ -23,7 +37,10 @@ def run_scraper(max_results_per_query=50):
                     title = res.get('title', '')
                     body = res.get('body', '')
                     
-                    if url and insert_lead(url, title, body, target_role=role_tag):
+                    if not is_valid_profile_url(url):
+                        continue
+
+                    if insert_lead(url, title, body, target_role=role_tag):
                         added_count += 1
                 
                 total_added += added_count
