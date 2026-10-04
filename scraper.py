@@ -1,3 +1,4 @@
+import re
 import time
 from config import (
     APIFY_API_KEY,
@@ -10,6 +11,14 @@ from quality_filter import score_lead, is_quality_lead
 
 # URL path segments that indicate a non-personal LinkedIn page.
 INVALID_URL_MARKERS = ("/jobs/", "/company/", "/posts/", "/dir/")
+
+# A valid personal LinkedIn profile URL must contain a "/in/<slug>" segment.
+# The slug is the vanity handle (letters, digits, hyphens, underscores, and
+# unicode word chars for non-Latin names).
+VALID_PROFILE_URL_RE = re.compile(
+    r"linkedin\.com/in/[A-Za-z0-9\-_%\w]+",
+    re.IGNORECASE,
+)
 
 # Phrases that indicate a stale / past-tense profile (no longer relevant).
 PAST_TENSE_MARKERS = (
@@ -25,15 +34,17 @@ PAST_TENSE_MARKERS = (
 
 
 def is_valid_profile_url(url: str) -> bool:
-    """Return True only for personal LinkedIn profile URLs (contain '/in/')."""
+    """Return True only for personal LinkedIn profile URLs.
+
+    Uses a regex to require a well-formed ``linkedin.com/in/<slug>`` path and
+    rejects known non-personal segments (jobs, company, posts, dir).
+    """
     if not url:
         return False
     lowered = url.lower()
-    if "/in/" not in lowered:
-        return False
     if any(marker in lowered for marker in INVALID_URL_MARKERS):
         return False
-    return True
+    return bool(VALID_PROFILE_URL_RE.search(url))
 
 
 def has_geo_marker(title: str, body: str) -> bool:

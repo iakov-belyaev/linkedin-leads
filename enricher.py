@@ -1,3 +1,5 @@
+import time
+
 from config import (
     DEEPSEEK_API_KEY,
     GEMINI_API_KEY,
@@ -14,6 +16,10 @@ from config import (
 
 GEMINI_MODEL = "gemini-2.5-flash"
 DEEPSEEK_MODEL = "deepseek-chat"
+
+# Retry policy for transient API failures (rate limits, network blips).
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 2.0
 
 _deepseek_client = None
 _gemini_client = None
@@ -80,6 +86,7 @@ def _call_deepseek(prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
         temperature=0.3,
+        timeout=15.0,
     )
     return response.choices[0].message.content.strip()
 
@@ -91,6 +98,26 @@ def _call_gemini(prompt: str) -> str:
         contents=prompt,
     )
     return (response.text or "").strip()
+
+
+def _call_with_retries(call_fn, prompt: str) -> str:
+    """Invoke an engine call with bounded retries and exponential backoff.
+
+    Retries transient failures (network errors, rate limits, timeouts) up to
+    MAX_RETRIES times. The final exception is re-raised so the UI can surface
+    a meaningful error message.
+    """
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return call_fn(prompt)
+        except Exception as exc:  # noqa: BLE001 - surface any engine failure
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+    raise RuntimeError(
+        f"Enrichment failed after {MAX_RETRIES} attempts: {last_exc}"
+    ) from last_exc
 
 
 def generate_pitch(title_snippet: str, body_snippet: str, target_role: str = "HR") -> str:
@@ -122,5 +149,5 @@ Output ONLY the raw pitch text with no quotes, greetings, or meta commentary.
 """
 
     if USE_GEMINI:
-        return _call_gemini(prompt)
-    return _call_deepseek(prompt)
+        return _call_with_retries(_call_gemini, prompt)
+    return _call_with_retries(_call_deepseek, prompt)
